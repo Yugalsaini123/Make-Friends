@@ -1,5 +1,5 @@
 // src/components/Home.js
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import debounce from 'lodash/debounce';
 
@@ -12,72 +12,70 @@ function Home() {
   const [pendingRequests, setPendingRequests] = useState([]);
   const [notifications, setNotifications] = useState({ message: '', type: '' });
 
-  useEffect(() => {
-    fetchFriends();
-    fetchRecommendations();
-    fetchPendingRequests();
-  }, []);
-
-  const fetchFriends = async () => {
+  // Fetch functions wrapped with useCallback for memoization
+  const fetchFriends = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/friends', {
-        headers: { Authorization: `Bearer ${token}` }
+      const response = await fetch('https://make-friends-backend.onrender.com/friends', {
+        headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json();
       setFriends(data);
     } catch (error) {
-        console.error('Error fetching friends:', error);
+      console.error('Error fetching friends:', error);
     }
-  };
+  }, [token]);
 
-  const fetchRecommendations = async () => {
+  const fetchRecommendations = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/friends/recommendations', {
-        headers: { Authorization: `Bearer ${token}` }
+      const response = await fetch('https://make-friends-backend.onrender.com/friends/recommendations', {
+        headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json();
       setRecommendations(data);
     } catch (error) {
       console.error('Error fetching recommendations:', error);
     }
-  };
+  }, [token]);
 
-  const fetchPendingRequests = async () => {
+  const fetchPendingRequests = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/friends/pending', {
-        headers: { Authorization: `Bearer ${token}` }
+      const response = await fetch('https://make-friends-backend.onrender.com/friends/pending', {
+        headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json();
       setPendingRequests(data);
     } catch (error) {
       console.error('Error fetching pending requests:', error);
     }
-  };
+  }, [token]);
 
-  const handleSearch = async () => {
-    try {
-      const response = await fetch(`http://localhost:5000/friends/search?username=${searchTerm}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = await response.json();
-      setSearchResults(data);
-    } catch (error) {
-      console.error('Error searching users:', error);
-    }
-  };
+  // Fetch all data on mount
+  useEffect(() => {
+    const fetchAllData = async () => {
+      await fetchFriends();
+      await fetchRecommendations();
+      await fetchPendingRequests();
+    };
+    fetchAllData();
+  }, [fetchFriends, fetchRecommendations, fetchPendingRequests]);
 
-  const debouncedSearch = useCallback(
-    debounce(async (term) => {
-      try {
-        const response = await fetch(`http://localhost:5000/friends/search?username=${term}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const data = await response.json();
-        setSearchResults(data);
-      } catch (error) {
-        console.error('Error searching users:', error);
-      }
-    }, 300),
+  // Debounced search logic
+  const debouncedSearch = useMemo(
+    () =>
+      debounce(async (term) => {
+        try {
+          const response = await fetch(
+            `https://make-friends-backend.onrender.com/friends/search?username=${term}`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            }
+          );
+          const data = await response.json();
+          setSearchResults(data);
+        } catch (error) {
+          console.error('Error searching users:', error);
+        }
+      }, 300),
     [token]
   );
 
@@ -91,45 +89,41 @@ function Home() {
     }
   };
 
+  // Friend request actions
   const sendFriendRequest = async (userId) => {
     try {
-      const response = await fetch(`http://localhost:5000/friends/request/${userId}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await fetch(
+        `https://make-friends-backend.onrender.com/friends/request/${userId}`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
       const data = await response.json();
-      
       setNotifications({
         message: data.message,
-        type: data.status === 'requested' ? 'success' : 'info'
+        type: data.status === 'requested' ? 'success' : 'info',
       });
-
       // Update UI
-      setSearchResults(prevResults =>
-        prevResults.map(user =>
+      setSearchResults((prevResults) =>
+        prevResults.map((user) =>
           user._id === userId
             ? { ...user, requestStatus: data.status === 'requested' ? 'requested' : 'none' }
             : user
         )
       );
-
-      // Refresh recommendations if needed
-      fetchRecommendations();
+      fetchRecommendations(); // Refresh recommendations if needed
     } catch (error) {
       console.error('Error managing friend request:', error);
-      setNotifications({
-        message: 'Error managing friend request',
-        type: 'error'
-      });
+      setNotifications({ message: 'Error managing friend request', type: 'error' });
     }
   };
 
-
   const acceptFriendRequest = async (userId) => {
     try {
-      await fetch(`http://localhost:5000/friends/accept/${userId}`, {
+      await fetch(`https://make-friends-backend.onrender.com/friends/accept/${userId}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       fetchPendingRequests();
       fetchFriends();
@@ -140,15 +134,16 @@ function Home() {
 
   const unfriend = async (userId) => {
     try {
-      await fetch(`http://localhost:5000/friends/unfriend/${userId}`, {
+      await fetch(`https://make-friends-backend.onrender.com/friends/unfriend/${userId}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       fetchFriends();
     } catch (error) {
       console.error('Error unfriending user:', error);
     }
   };
+
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
