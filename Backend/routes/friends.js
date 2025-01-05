@@ -105,29 +105,27 @@ router.post('/accept/:userId', auth, async (req, res) => {
 router.get('/recommendations', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId).populate('friends');
-    const friendIds = user.friends.map(friend => friend._id);
-    
-    // Get friends of friends
+    const friendIds = user.friends.map(friend => friend._id.toString());
+
     const friendsOfFriends = await User.find({
-      _id: { 
-        $nin: [...friendIds, user._id],
+      _id: {
+        $nin: [...friendIds, user._id.toString()],
         $nin: user.pendingFriendRequests,
         $nin: user.sentFriendRequests
       }
     }).populate('friends');
 
-    // Calculate mutual friends
     const recommendations = friendsOfFriends
       .map(potential => {
         const mutualFriends = potential.friends.filter(friend => 
-          friendIds.includes(friend._id)
+          friendIds.includes(friend._id.toString())
         ).length;
         return {
           user: potential,
           mutualFriends
         };
       })
-      .filter(rec => rec.mutualFriends > 0)
+      .filter(rec => rec.mutualFriends > 0 && rec.user._id.toString() !== user._id.toString())  // Exclude current user
       .sort((a, b) => b.mutualFriends - a.mutualFriends)
       .slice(0, 5);
 
@@ -136,6 +134,7 @@ router.get('/recommendations', auth, async (req, res) => {
     res.status(500).json({ message: 'Error getting recommendations' });
   }
 });
+
 
 // Unfriend user
 router.post('/unfriend/:userId', auth, async (req, res) => {
