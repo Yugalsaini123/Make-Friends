@@ -1,6 +1,7 @@
 // src/components/Home.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import debounce from 'lodash/debounce';
 
 function Home() {
   const { token, logout } = useAuth();
@@ -9,6 +10,7 @@ function Home() {
   const [friends, setFriends] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [pendingRequests, setPendingRequests] = useState([]);
+  const [notifications, setNotifications] = useState({ message: '', type: '' });
 
   useEffect(() => {
     fetchFriends();
@@ -64,17 +66,64 @@ function Home() {
     }
   };
 
+  const debouncedSearch = useCallback(
+    debounce(async (term) => {
+      try {
+        const response = await fetch(`http://localhost:5000/friends/search?username=${term}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await response.json();
+        setSearchResults(data);
+      } catch (error) {
+        console.error('Error searching users:', error);
+      }
+    }, 300),
+    [token]
+  );
+
+  const handleSearchChange = (e) => {
+    const term = e.target.value;
+    setSearchTerm(term);
+    if (term.length > 0) {
+      debouncedSearch(term);
+    } else {
+      setSearchResults([]);
+    }
+  };
+
   const sendFriendRequest = async (userId) => {
     try {
-      await fetch(`http://localhost:5000/friends/request/${userId}`, {
+      const response = await fetch(`http://localhost:5000/friends/request/${userId}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` }
       });
-      handleSearch(); // Refresh search results
+      const data = await response.json();
+      
+      setNotifications({
+        message: data.message,
+        type: data.status === 'requested' ? 'success' : 'info'
+      });
+
+      // Update UI
+      setSearchResults(prevResults =>
+        prevResults.map(user =>
+          user._id === userId
+            ? { ...user, requestStatus: data.status === 'requested' ? 'requested' : 'none' }
+            : user
+        )
+      );
+
+      // Refresh recommendations if needed
+      fetchRecommendations();
     } catch (error) {
-      console.error('Error sending friend request:', error);
+      console.error('Error managing friend request:', error);
+      setNotifications({
+        message: 'Error managing friend request',
+        type: 'error'
+      });
     }
   };
+
 
   const acceptFriendRequest = async (userId) => {
     try {
@@ -113,6 +162,15 @@ function Home() {
             Logout
           </button>
         </div>
+        {notifications.message && (
+          <div className={`mb-4 p-4 rounded ${
+            notifications.type === 'success' ? 'bg-green-100 text-green-700' :
+            notifications.type === 'error' ? 'bg-red-100 text-red-700' :
+            'bg-blue-100 text-blue-700'
+          }`}>
+            {notifications.message}
+          </div>
+        )}
 
         {/* Search Section */}
         <div className="bg-white p-6 rounded-lg shadow mb-8">
@@ -120,16 +178,10 @@ function Home() {
             <input
               type="text"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={handleSearchChange}
               placeholder="Search users..."
               className="flex-1 p-2 border rounded"
             />
-            <button
-              onClick={handleSearch}
-              className="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600"
-            >
-              Search
-            </button>
           </div>
           
           {searchResults.length > 0 && (
@@ -139,12 +191,25 @@ function Home() {
                 {searchResults.map(user => (
                   <div key={user._id} className="border p-4 rounded">
                     <p className="font-medium">{user.username}</p>
-                    <button
-                      onClick={() => sendFriendRequest(user._id)}
-                      className="mt-2 bg-green-500 text-white px-4 py-1 rounded hover:bg-green-600"
-                    >
-                      Add Friend
-                    </button>
+                    {user.requestStatus === 'none' && (
+                      <button
+                        onClick={() => sendFriendRequest(user._id)}
+                        className="mt-2 bg-green-500 text-white px-4 py-1 rounded hover:bg-green-600"
+                      >
+                        Add Friend
+                      </button>
+                    )}
+                    {user.requestStatus === 'requested' && (
+                      <button
+                        onClick={() => sendFriendRequest(user._id)}
+                        className="mt-2 bg-gray-500 text-white px-4 py-1 rounded hover:bg-gray-600"
+                      >
+                        Cancel Request
+                      </button>
+                    )}
+                    {user.requestStatus === 'friend' && (
+                      <span className="mt-2 text-green-600">Already Friends</span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -197,7 +262,10 @@ function Home() {
             {recommendations.map(rec => (
               <div key={rec.user._id} className="border p-4 rounded">
                 <p className="font-medium">{rec.user.username}</p>
-                <p className="text-sm text-gray-600">{rec.mutualFriends} mutual friends</p>
+                <p className="text-sm text-gray-600">
+                  {rec.mutualFriends} mutual friends
+                  {rec.mutualInterests > 0 && ` • ${rec.mutualInterests} shared interests`}
+                </p>
                 <button
                   onClick={() => sendFriendRequest(rec.user._id)}
                   className="mt-2 bg-green-500 text-white px-4 py-1 rounded hover:bg-green-600"

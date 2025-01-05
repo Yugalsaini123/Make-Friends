@@ -16,16 +16,29 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// Search users
+// Search users with autocomplete
 router.get('/search', auth, async (req, res) => {
   try {
     const searchTerm = req.query.username;
+    if (!searchTerm) {
+      return res.json([]);
+    }
+
+    const currentUser = await User.findById(req.userId);
     const users = await User.find({
-      username: { $regex: searchTerm, $options: 'i' },
+      username: { $regex: `^${searchTerm}`, $options: 'i' },
       _id: { $ne: req.userId }
-    }).select('-password');
+    })
+    .select('-password')
+    .limit(10);
+
+    const enhancedUsers = users.map(user => ({
+      ...user.toObject(),
+      requestStatus: currentUser.sentFriendRequests.includes(user._id) ? 'requested' : 
+                    currentUser.friends.includes(user._id) ? 'friend' : 'none'
+    }));
     
-    res.json(users);
+    res.json(enhancedUsers);
   } catch (error) {
     res.status(500).json({ message: 'Error searching users' });
   }
@@ -37,8 +50,7 @@ router.get('/pending', auth, async (req, res) => {
     const user = await User.findById(req.userId).populate('pendingFriendRequests'); 
     const pendingRequests = user.pendingFriendRequests; 
     res.json(pendingRequests); 
-  } 
-  catch (error) { 
+  } catch (error) { 
     console.error('Error fetching pending friend requests:', error.message); 
     res.status(500).json({ message: 'Error fetching pending friend requests' }); 
   } 
@@ -58,19 +70,36 @@ router.post('/request/:userId', auth, async (req, res) => {
       return res.status(400).json({ message: 'Already friends' });
     }
 
-    if (!receiver.pendingFriendRequests.includes(sender._id)) {
-      receiver.pendingFriendRequests.push(sender._id);
-      sender.sentFriendRequests.push(receiver._id);
+    // Check if request already exists
+    const existingRequest = sender.sentFriendRequests.includes(receiver._id);
+    if (existingRequest) {
+      // Cancel request
+      sender.sentFriendRequests = sender.sentFriendRequests.filter(
+        id => id.toString() !== receiver._id.toString()
+      );
+      receiver.pendingFriendRequests = receiver.pendingFriendRequests.filter(
+        id => id.toString() !== sender._id.toString()
+      );
       
-      await receiver.save();
       await sender.save();
+      await receiver.save();
+      
+      return res.json({ message: 'Friend request cancelled', status: 'cancelled' });
     }
 
-    res.json({ message: 'Friend request sent' });
+    // Send new request
+    receiver.pendingFriendRequests.push(sender._id);
+    sender.sentFriendRequests.push(receiver._id);
+    
+    await receiver.save();
+    await sender.save();
+
+    res.json({ message: 'Friend request sent', status: 'requested' });
   } catch (error) {
-    res.status(500).json({ message: 'Error sending friend request' });
+    res.status(500).json({ message: 'Error managing friend request' });
   }
 });
+
 
 // Accept friend request
 router.post('/accept/:userId', auth, async (req, res) => {
@@ -104,33 +133,68 @@ router.post('/accept/:userId', auth, async (req, res) => {
 // Get friend recommendations
 router.get('/recommendations', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.userId).populate('friends');
+    const user = await User.findById(req.userId)
+      .populate('friends')
+      .populate('sentFriendRequests')
+      .populate('pendingFriendRequests');
+
     const friendIds = user.friends.map(friend => friend._id.toString());
+    const sentRequestIds = user.sentFriendRequests.map(req => req._id.toString());
+    const pendingRequestIds = user.pendingFriendRequests.map(req => req._id.toString());
+    const excludeIds = [...friendIds, ...sentRequestIds, ...pendingRequestIds, user._id.toString()];
 
-    const friendsOfFriends = await User.find({
-      _id: {
-        $nin: [...friendIds, user._id.toString()],
-        $nin: user.pendingFriendRequests,
-        $nin: user.sentFriendRequests
-      }
-    }).populate('friends');
+    // First, get users with similar interests
+    let similarInterestsUsers = [];
+    if (user.interests && user.interests.length > 0) {
+      similarInterestsUsers = await User.find({
+        _id: { $nin: excludeIds },
+        interests: { $in: user.interests }
+      }).populate('friends');
+    }
 
-    const recommendations = friendsOfFriends
+    // Then, get users with mutual friends
+    let mutualFriendsUsers = [];
+    if (friendIds.length > 0) {
+      mutualFriendsUsers = await User.find({
+        _id: { $nin: excludeIds }
+      }).populate('friends');
+
+      // Filter users who actually have mutual friends
+      mutualFriendsUsers = mutualFriendsUsers.filter(potentialFriend => {
+        const mutualFriendsCount = potentialFriend.friends
+          .filter(friend => friendIds.includes(friend._id.toString()))
+          .length;
+        return mutualFriendsCount > 0;
+      });
+    }
+
+    // Combine and calculate scores
+    const allPotentialUsers = [...new Set([...similarInterestsUsers, ...mutualFriendsUsers])];
+    
+    const recommendations = allPotentialUsers
       .map(potential => {
-        const mutualFriends = potential.friends.filter(friend => 
-          friendIds.includes(friend._id.toString())
-        ).length;
+        const mutualFriends = potential.friends
+          .filter(friend => friendIds.includes(friend._id.toString()))
+          .length;
+
+        const mutualInterests = user.interests
+          .filter(interest => potential.interests.includes(interest))
+          .length;
+
         return {
           user: potential,
-          mutualFriends
+          mutualFriends,
+          mutualInterests,
+          score: (mutualFriends * 2) + mutualInterests
         };
       })
-      .filter(rec => rec.mutualFriends > 0 && rec.user._id.toString() !== user._id.toString())  // Exclude current user
-      .sort((a, b) => b.mutualFriends - a.mutualFriends)
+      .filter(rec => rec.score > 0) // Only include recommendations with some connection
+      .sort((a, b) => b.score - a.score)
       .slice(0, 5);
 
     res.json(recommendations);
   } catch (error) {
+    console.error('Error getting recommendations:', error);
     res.status(500).json({ message: 'Error getting recommendations' });
   }
 });
